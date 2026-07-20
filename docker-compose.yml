@@ -1,15 +1,16 @@
 services:
   api:
     build: .
-    command: sh -c "fastapi run /app/src/start.py --host 0.0.0.0 --port 8000 --reload"
+    command: sh -c "fastapi run /app/api/run.py --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
     environment:
-      POSTGRES_URL: postgresql://blink:blink@postgres:5432/blink
+      ENV_STATE: dev
+      DEV_DATABASE_URL: postgresql+aiopg://blink:blink@postgres:5432/blink
+      DEV_CLICKHOUSE_URL: clickhouse://default@clickhouse:8123/blink_logs
       REDIS_URL: redis://redis:6379/0
-      CLICKHOUSE_HOST: clickhouse
     volumes:
-      - ./src/:/app/src/
+      - ./api/:/app/api/
     depends_on:
       - postgres
       - redis
@@ -26,6 +27,8 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:24-alpine
+    environment:
+      CLICKHOUSE_DB: blink_logs
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
     ulimits:

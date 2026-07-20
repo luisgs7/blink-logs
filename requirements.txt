@@ -4,12 +4,14 @@ uvicorn[standard]==0.49.0
 pydantic==2.13.4
 
 # Relational Database (PostgreSQL) & ORM
-sqlalchemy==2.0.0
+sqlalchemy==2.0.36
 asyncpg==0.30.0        # Async driver for PostgreSQL
 alembic==1.14.0        # For database migrations
+databases[aiopg]==0.9.0 # Async driver for PostgreSQL
 
 # Analytical Database (ClickHouse)
 clickhouse-connect==0.8.0  # Official driver focused on performance (Bulk Inserts)
+clickhouse-sqlalchemy==0.3.2
 
 # Messaging and Cache (Redis)
 redis==5.2.0           # Comes with native async/await support
@@ -21,3 +23,11 @@ passlib[bcrypt]==1.7.4            # For hashing passwords in PostgreSQL
 # Linting and Type Checking
 mypy==2.1.0
 pylint==4.0.6
+
+# Testing
+pytest==9.1.1
+
+# Configuration
+python-dotenv==1.2.2
+pydantic-settings==2.14.2
+loguru==0.7.3
