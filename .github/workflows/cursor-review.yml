@@ -87,23 +87,51 @@ jobs:
       - name: Cache Cursor CLI
         uses: actions/cache@v4
         with:
-          path: ~/.cursor
-          key: cursor-cli-${{ runner.os }}-v3
+          path: |
+            ~/.local/share/cursor-agent
+            ~/.local/bin/agent
+            ~/.local/bin/cursor-agent
+          key: cursor-cli-${{ runner.os }}-v4
 
       - name: Install Cursor CLI
         run: |
           set -euo pipefail
-          AGENT_BIN="$HOME/.cursor/bin/agent"
+
           install_agent() {
             curl https://cursor.com/install -fsS | bash
           }
 
-          if [ ! -x "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
+          resolve_agent_bin() {
+            if [ -x "$HOME/.local/bin/agent" ]; then
+              printf '%s' "$HOME/.local/bin/agent"
+              return 0
+            fi
+
+            local candidate=""
+            candidate="$(find "$HOME/.local/share/cursor-agent/versions" -type f -name cursor-agent -perm -111 2>/dev/null | sort | tail -1 || true)"
+            if [ -n "$candidate" ]; then
+              printf '%s' "$candidate"
+              return 0
+            fi
+
+            return 1
+          }
+
+          AGENT_BIN="$(resolve_agent_bin || true)"
+          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
             install_agent
+            AGENT_BIN="$(resolve_agent_bin)"
+          fi
+
+          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
+            echo "Cursor agent binary not found after install."
+            ls -la "$HOME/.local/bin" 2>/dev/null || true
+            ls -la "$HOME/.local/share/cursor-agent/versions" 2>/dev/null || true
+            exit 1
           fi
 
           "$AGENT_BIN" --version
-          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "AGENT_BIN=$AGENT_BIN" >> "$GITHUB_ENV"
 
       - name: Run Cursor Agent Review
@@ -113,10 +141,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          AGENT_BIN="${AGENT_BIN:-$HOME/.cursor/bin/agent}"
-          if [ ! -x "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
+          resolve_agent_bin() {
+            if [ -x "$HOME/.local/bin/agent" ]; then
+              printf '%s' "$HOME/.local/bin/agent"
+              return 0
+            fi
+
+            local candidate=""
+            candidate="$(find "$HOME/.local/share/cursor-agent/versions" -type f -name cursor-agent -perm -111 2>/dev/null | sort | tail -1 || true)"
+            if [ -n "$candidate" ]; then
+              printf '%s' "$candidate"
+              return 0
+            fi
+
+            return 1
+          }
+
+          AGENT_BIN="${AGENT_BIN:-}"
+          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
+            AGENT_BIN="$(resolve_agent_bin || true)"
+          fi
+          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
             curl https://cursor.com/install -fsS | bash
-            AGENT_BIN="$HOME/.cursor/bin/agent"
+            AGENT_BIN="$(resolve_agent_bin)"
+          fi
+          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
+            echo "Cursor agent binary not found after install."
+            exit 1
           fi
 
           if [ -z "${CURSOR_API_KEY:-}" ]; then
