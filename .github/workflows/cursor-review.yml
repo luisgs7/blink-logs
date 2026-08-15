@@ -1,5 +1,9 @@
 name: Cursor PR Agent Reviewer
 
+# Trust model: for same-repo PRs, GitHub runs this workflow from the PR branch.
+# Anyone who can push branches could modify it while secrets are available.
+# Restrict branch push access or treat branch writers as trusted.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -75,8 +79,9 @@ jobs:
   cursor-review:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Secrets are unavailable for workflows triggered by fork PRs.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
 
     steps:
       - name: Checkout repository
@@ -91,9 +96,14 @@ jobs:
             ~/.local/share/cursor-agent
             ~/.local/bin/agent
             ~/.local/bin/cursor-agent
-          key: cursor-cli-${{ runner.os }}-v4
+          key: cursor-cli-${{ runner.os }}-2026.08.11
+          restore-keys: |
+            cursor-cli-${{ runner.os }}-
 
-      - name: Install Cursor CLI
+      - name: Run Cursor Agent Review
+        id: cursor_agent
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
           set -euo pipefail
 
@@ -117,58 +127,38 @@ jobs:
             return 1
           }
 
-          AGENT_BIN="$(resolve_agent_bin || true)"
-          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
-            install_agent
-            AGENT_BIN="$(resolve_agent_bin)"
-          fi
-
-          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
-            echo "Cursor agent binary not found after install."
-            ls -la "$HOME/.local/bin" 2>/dev/null || true
-            ls -la "$HOME/.local/share/cursor-agent/versions" 2>/dev/null || true
-            exit 1
-          fi
-
-          "$AGENT_BIN" --version
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "AGENT_BIN=$AGENT_BIN" >> "$GITHUB_ENV"
-
-      - name: Run Cursor Agent Review
-        id: cursor_agent
-        env:
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-        run: |
-          set -euo pipefail
-
-          resolve_agent_bin() {
-            if [ -x "$HOME/.local/bin/agent" ]; then
-              printf '%s' "$HOME/.local/bin/agent"
-              return 0
+          ensure_agent() {
+            local agent_bin=""
+            agent_bin="$(resolve_agent_bin || true)"
+            if [ -z "$agent_bin" ] || ! "$agent_bin" --version >/dev/null 2>&1; then
+              install_agent
+              agent_bin="$(resolve_agent_bin)"
             fi
 
-            local candidate=""
-            candidate="$(find "$HOME/.local/share/cursor-agent/versions" -type f -name cursor-agent -perm -111 2>/dev/null | sort | tail -1 || true)"
-            if [ -n "$candidate" ]; then
-              printf '%s' "$candidate"
-              return 0
+            if [ -z "$agent_bin" ] || ! "$agent_bin" --version >/dev/null 2>&1; then
+              echo "Cursor agent binary not found after install."
+              ls -la "$HOME/.local/bin" 2>/dev/null || true
+              ls -la "$HOME/.local/share/cursor-agent/versions" 2>/dev/null || true
+              exit 1
             fi
 
-            return 1
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            printf '%s' "$agent_bin"
           }
 
-          AGENT_BIN="${AGENT_BIN:-}"
-          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
-            AGENT_BIN="$(resolve_agent_bin || true)"
-          fi
-          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
-            curl https://cursor.com/install -fsS | bash
-            AGENT_BIN="$(resolve_agent_bin)"
-          fi
-          if [ -z "$AGENT_BIN" ] || ! "$AGENT_BIN" --version >/dev/null 2>&1; then
-            echo "Cursor agent binary not found after install."
-            exit 1
-          fi
+          write_review_output() {
+            local content="$1"
+            local delimiter=""
+            delimiter="$(dd if=/dev/urandom bs=15 count=1 status=none | base64)"
+            {
+              echo "review_comment<<$delimiter"
+              printf '%s\n' "$content"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          AGENT_BIN="$(ensure_agent)"
+          "$AGENT_BIN" --version
 
           if [ -z "${CURSOR_API_KEY:-}" ]; then
             echo "CURSOR_API_KEY is not set."
@@ -178,11 +168,7 @@ jobs:
           git diff "${{ github.event.pull_request.base.sha }}"..."${{ github.event.pull_request.head.sha }}" > pr_changes.diff
 
           if [ ! -s pr_changes.diff ]; then
-            {
-              echo "review_comment<<EOF"
-              echo "No code changes detected in this PR."
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            write_review_output "No code changes detected in this PR."
             exit 0
           fi
 
@@ -231,20 +217,14 @@ jobs:
 
           marker="${REVIEW_MARKER}"
           footer=$'\n\n_(Review truncated due to length. See the [workflow run]('"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"') for details.)_'
-          max_review_bytes=$((65536 - ${#marker} - 2 - ${#footer} - 500))
+          max_review_chars=$((65536 - ${#marker} - 2 - ${#footer} - 500))
 
-          output_bytes=$(printf '%s' "$OUTPUT" | wc -c | tr -d ' ')
-          if [ "$output_bytes" -gt "$max_review_bytes" ]; then
-            OUTPUT=$(printf '%s' "$OUTPUT" | head -c "$max_review_bytes")
+          if [ "${#OUTPUT}" -gt "$max_review_chars" ]; then
+            OUTPUT="$(printf '%s' "$OUTPUT" | python3 -c "import sys; limit=int(sys.argv[1]); print(sys.stdin.read()[:limit], end='')" "$max_review_chars")"
             OUTPUT="${OUTPUT}${footer}"
           fi
 
-          delimiter=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          {
-            echo "review_comment<<$delimiter"
-            printf '%s\n' "$OUTPUT"
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
+          write_review_output "$OUTPUT"
 
       - name: Post Comment on PR
         if: always() && !cancelled()
@@ -275,11 +255,19 @@ jobs:
               }
             }
 
+            function truncateText(text, maxLength) {
+              const chars = [...text];
+              if (chars.length <= maxLength) {
+                return text;
+              }
+              return chars.slice(0, maxLength).join('');
+            }
+
             function buildBody(reviewText) {
               let body = `${marker}\n\n${reviewText}`;
               if (body.length > githubMaxBodyLength) {
                 const maxReviewLength = githubMaxBodyLength - marker.length - 2 - reserveBytes;
-                body = `${marker}\n\n${reviewText.slice(0, maxReviewLength)}\n\n_(Review truncated due to GitHub comment size limit.)_`;
+                body = `${marker}\n\n${truncateText(reviewText, maxReviewLength)}\n\n_(Review truncated due to GitHub comment size limit.)_`;
               }
               return body;
             }
@@ -307,6 +295,14 @@ jobs:
             if (reviewOutcome === 'success') {
               const reviewText = ${{ toJSON(steps.cursor_agent.outputs.review_comment) }};
               await upsertComment(buildBody(reviewText));
-            } else if ('${{ job.status }}' === 'failure') {
+              return;
+            }
+
+            if (reviewOutcome === 'failure') {
               await upsertComment(buildBody(`⚠️ Automated review failed. See the [workflow run](${runUrl}) for details.`));
+              return;
+            }
+
+            if (reviewOutcome === 'skipped') {
+              await upsertComment(buildBody(`⚠️ Automated review did not run. See the [workflow run](${runUrl}) for details.`));
             }
